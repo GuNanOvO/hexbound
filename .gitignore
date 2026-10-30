@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+examples/next-app/.next/
+examples/next-app/tsconfig.tsbuildinfo
+.superpowers/

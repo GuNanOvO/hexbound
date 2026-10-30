@@ -1,0 +1,66 @@
+# Hexbound rule index
+
+This is the exact index of the twenty approved rules. Each entry states the hard requirement, the required replacement, what the checker can decide, and what remains a semantic review. Every rule in the three grouped references has a **Bad** code block, a **Good** code block, and a **Limits** paragraph; the right-hand column maps each ID to its exact group file.
+
+`npx --no-install hexbound check` proves only the mechanical portion described here. A clean result is not a claim that every semantic obligation is true, that authorization is correct, that a database is safe, or that a Next.js build passes.
+
+**Status:** rules version `0.1.0`; twenty rules approved. This document is the public rule reference, not an effectiveness report.
+
+## How to read the mechanism column
+
+| Mark | Meaning |
+|---|---|
+| **M** | Mechanically checked: `tsc`, typescript-eslint, or a custom compiler-API rule. |
+| **M\*** | Mechanically checked with a stated boundary; the rest is semantic review. |
+| **C** | Configuration/coverage check (effective tsconfig, required rules, exclusions). |
+| **B** | Behavioral fixture or local integration check; not a universal static proof. |
+| **S** | Semantic obligation. No general static proof is claimed; reported as `not_proven_by_static_analysis`. |
+
+## The twenty rules
+
+| ID | Hard requirement | Required form (not this → this) | Mechanism and limit | Reference |
+|---|---|---|---|---|
+| **HB001** | No React `useState` in project code, including aliases, namespaces, re-exports, and wrappers. | `useState(0)` → `useReducer(reducer, 0)` with a finite event union. | **M\***: React symbol/source, import/export, alias and statically visible wrapper paths. Arbitrary computed property access is not claimed. | [rules-react.md](../skills/hexbound/references/rules-react.md) (HB001) |
+| **HB002** | Managed Effects only in the declared effect adapter directory, with external/setup/cleanup notes. | `useEffect` in a component → dedicated Hook under `hooks/effects/` (or configured `effectRoots`). | **M\***: Hook source, path, comment slots (including `none: <reason>` when no cleanup is needed), re-export. Whether the rationale is sufficient is **S**. | [rules-react.md](../skills/hexbound/references/rules-react.md) (HB002) |
+| **HB003** | Reducer actions are a finite business event union; transitions are pure; no generic patch backdoor. | `{type:"SET"; patch: Partial<State>}` → `{type:"quantityChanged"; quantity:number}` + exhaustive pure reducer. | **M\***: recognizable generic payloads, updater callbacks, direct side effects, exhaustiveness. Business meaning and deep purity are **S**. | [rules-react.md](../skills/hexbound/references/rules-react.md) (HB003) |
+| **HB004** | No state derived from current inputs and no Effect synchronizing duplicate copies. | `state.total` + `useEffect(setTotal)` → `const total = unitPriceCents * quantity` during render. | **S**: reported as `not_proven_by_static_analysis`; variable names and dispatch shapes are not proof. | [rules-react.md](../skills/hexbound/references/rules-react.md) (HB004) |
+| **HB005** | No `any`, unsafe propagation, assertions, double assertions, or TypeScript suppression comments. | `body as CheckoutBody` → `const raw: unknown = ...; Schema.safeParse(raw)`. `as const` and `satisfies` are allowed. | **M**: strict types and the configured typescript-eslint checks; third-party type bridges need an approved exception. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB005) |
+| **HB006** | No non-null assertion; required strict options stay enabled; absence is handled explicitly. | `items[0]!` → `const first = items[0]; if (first === undefined) return ...`. | **M/C**: effective `tsconfig` through `extends`, source coverage, `tsc`. Whether the missing-value behavior is right is **S**. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB006) |
+| **HB007** | Props, state, and business inputs are readonly; do not mutate shared values. | `props.rows.sort()` → `[...props.rows].sort()`. Private local accumulators may mutate. | **M\***: readonly types, direct writes, known mutating methods, reducer state bindings. Deep aliases and ownership are **S**. | [rules-react.md](../skills/hexbound/references/rules-react.md) (HB007) |
+| **HB008** | Exported business writes use dedicated inputs, not arbitrary patches. | `updateProject(id, patch: Partial<Project>)` → `archiveProject({projectId, archivedAt})`. | **M\***: exported business/server-service input declarations. Whether the operation is genuinely a business write is **S**. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB008) |
+| **HB009** | Untrusted entry data is validated as `unknown` before business use; authorization is separate. | `formData.get("quantity") as number` → schema `safeParse` + parsed data. | **M\***: declared entry patterns and obvious raw flows. Full domination, indirect dataflow, and authorization are **S**. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB009) |
+| **HB010** | Database and sensitive configuration stay behind the server boundary; clients cannot reach them. | Client `import { db }` → server-only data module consumed by a server component. | **M\***: value-import/re-export graph, TypeScript paths, server-only markers, env modules. The check does not run `next build`; unknown SDKs need classification. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB010) |
+| **HB011** | No entities across the client boundary; explicit DTOs; no request data in module-level mutable state. | `<Table orders={orders} />` / `{...entity}` → `orders.map(toOrderDto)` and explicit fields. | **M\***: registered entity origins, direct props/responses, spreads, known module-state mutation. DTO sensitivity is **S**. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB011) |
+| **HB012** | Await, return, or deliberately handle Promises; no empty catch or failure-to-success default. | `void save(); try {} catch {}` → `await save();` or an explicit failure result with a reason. | **M**: floating/misused Promises, empty or comments-only catches, `void` escape. Disguised failure is **S**. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB012) |
+| **HB013** | Business identities are distinct branded values made at a schema/constructor boundary. | `cancel(orderId: string, userId: string)` / `raw as UserId` → `UserIdSchema.parse(raw)` and `orderId: OrderId`. | **M\***: schema brands, registered identity fields, cross-brand `tsc` errors. Format, business identity, and authorization are **S**. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB013) |
+| **HB014** | Multi-outcome business operations return a discriminated union. | `{success:boolean; data?:Order; error?:string}` → `{kind:"ok";order}` \| `{kind:"invalid";...}`. | **M\***: defined anti-patterns and statically visible narrowing. Completeness of expected outcomes is **S**. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB014) |
+| **HB015** | Core business receives time, randomness, IDs, and identity explicitly; no implicit global reads. | `randomUUID()` / `Date.now()` inside domain → `{orderId, now, userId}` inputs from the boundary. | **M\***: known APIs and auth imports in `businessRoots`. Arbitrary indirect nondeterminism is **S**. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB015) |
+| **HB016** | Required missing business data fails explicitly; no empty identity, zero amount, or empty array as fake success. | `session?.userId ?? ""` → `if (session === null) return {kind:"unauthenticated"}`. | **M\*/S/B**: one narrow type-aware diagnostic for an empty-string fallback (`?? ""` or `\|\| ""`) on a nullable, explicitly declared registered identity in a business root; zero amounts, empty collections, broad defaults, and missing branches are semantic and behavior-review items. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB016) |
+| **HB017** | Money is currency + safe-integer minor units (or one explicit decimal scheme); parse, range, overflow, and rounding are explicit. | `parseFloat("12.50") * 100` / `price * quantity` → exact decimal parse, `Money`, safe-integer add, explicit rounding. | **M\*/B**: with `"money": true`, arithmetic on operands typed as a declared `moneyTypes` name is flagged; bare number/`parseFloat` math and currency scale, rounding, and serialization need review and behavior checks. A known money declaration with the rule disabled fails closed. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB017) |
+| **HB018** | No positional boolean parameters in exported business APIs. | `setVisibility(id, true)` → `setVisibility({visible: true})` or `publish()` / `unpublish()`. | **M\***: exported business signatures including aliases and unions. Framework/third-party callback signatures are excluded; named options remain **S** for mode design. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB018) |
+| **HB019** | Finite and discriminated business unions are exhaustive; no silent default. | `default: return state` → every case plus `assertNever(value)`; new variants fail to compile. | **M\***: switch exhaustiveness for analyzable finite unions. `if` chains and business completeness are **S**. | [rules-types.md](../skills/hexbound/references/rules-types.md) (HB019) |
+| **HB020** | SQL values are parameter-bound; identifiers come from a reviewed mapping/identifier API. | `` `... WHERE id = '${id}'` `` / `raw(text)` → `sql\`... ${id}\`` or `$1` parameters; closed sort map. | **M\*/B**: only receivers/methods whose provenance traces to a registered `dbPackages` import or ambient module; SDK-specific safe/unsafe metadata, concatenation/raw calls, identifier boundaries. Unknown SDKs need classification; local DB smoke proves parameter behavior. | [rules-server.md](../skills/hexbound/references/rules-server.md) (HB020) |
+
+## Applicability
+
+- All rules apply to project-owned TypeScript source, including tests and root TypeScript config, unless a rule says otherwise.
+- HB010's database sub-check and HB020 apply only when a database SDK registered in `dbPackages` is actually imported (directly, aliased, or as an ambient module). A DB-free project is reported not applicable and is not analyzed through a variable name such as `db`. An unregistered SDK must be classified and registered; it is not silently passed.
+- A real-money project must set `"money": true` and declare its `moneyTypes`. A project-owned type/interface with a registered money name while the flag is false is an incomplete check (exit 2), not “not applicable.” Money without declared types cannot be inferred from arbitrary numbers; review must identify it and enable the rule. Do not add a database or money library merely to manufacture applicability.
+- Third-party code and declared generated output are outside the source rules. The excluded paths must be listed; an empty scan is not a pass.
+- HB004 has no general static proof. HB016's single narrow identity diagnostic does not prove zero-amount, empty-collection, or missing-branch behavior; those remain semantic review points, not green checks.
+
+## CLI and waivers
+
+The project-level names are `npx --no-install hexbound init`, `npx --no-install hexbound check`, and `npx --no-install hexbound request-waiver`. Resolve the checker from the project's installed dependency; do not use a globally resolved binary or let `npx` download an unreviewed version. The policy file is `.hexbound.json`. `npx --no-install hexbound check --json` emits the structured result; `npx --no-install hexbound check --trusted-policy <path>` reads the human-approved policy from the supplied trusted location. Exit `0` means the applicable mechanical checks passed with no unapproved exception, `1` means a code or policy violation, and `2` means an unsupported environment, checker failure, parse/coverage failure, or unverified approval context.
+
+An agent may only create a pending waiver request. It must not write `approvedBy`, `expires`, or approved records, exclude paths, disable or downgrade rules, add suppressions, or edit the check wiring. Pending requests never change results. Working-tree approvals do not override a trusted policy. See the skill's waiver section and the project README for the exact workflow.
+
+## Rule groups
+
+| Group | Rules | Full code and limitations |
+|---|---|---|
+| React state and effects | HB001, HB002, HB003, HB004, HB007 | [rules-react.md](../skills/hexbound/references/rules-react.md) |
+| Types, domain inputs, identity, results, money | HB005, HB006, HB008, HB013, HB014, HB017, HB018, HB019 | [rules-types.md](../skills/hexbound/references/rules-types.md) |
+| Server boundaries, validation, errors, SQL | HB009, HB010, HB011, HB012, HB015, HB016, HB020 | [rules-server.md](../skills/hexbound/references/rules-server.md) |
+
+All twenty IDs appear exactly once in the table above and once in the group index. Rule metadata and the semantic coverage map are versioned with the checker; this document states the intended contract, not a substitute for the emitted `--json` report.

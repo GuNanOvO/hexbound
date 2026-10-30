@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "rulesVersion": "0.1.0",
+  "businessRoots": [
+    "domain",
+    "src/domain"
+  ],
+  "serverRoots": [
+    "server",
+    "src/server"
+  ],
+  "serverServicesRoots": [
+    "server/services",
+    "src/server/services"
+  ],
+  "effectRoots": [
+    "hooks/effects",
+    "src/hooks/effects"
+  ],
+  "dataRoots": [
+    "server/data",
+    "src/server/data"
+  ],
+  "validationRoots": [
+    "validation",
+    "src/validation"
+  ],
+  "cacheRoots": [],
+  "envFiles": [
+    "env/server.ts",
+    "env/public.ts",
+    "src/env/server.ts",
+    "src/env/public.ts"
+  ],
+  "generatedPaths": [
+    "next-env.d.ts"
+  ],
+  "dbPackages": [
+    "node:sqlite",
+    "better-sqlite3",
+    "pg",
+    "postgres",
+    "@prisma/client",
+    "drizzle-orm",
+    "mysql2"
+  ],
+  "authModules": [
+    "next-auth",
+    "@clerk/nextjs",
+    "server/auth",
+    "@/server/auth"
+  ],
+  "identityTypes": [
+    "UserId",
+    "OrderId",
+    "ProjectId",
+    "TenantId",
+    "ProductId"
+  ],
+  "moneyTypes": [
+    "Money",
+    "MinorUnits"
+  ],
+  "money": true,
+  "waivers": []
+}

@@ -1,0 +1,40 @@
+import type { RuleId } from '../types.js';
+
+export const RULES: readonly { readonly id: RuleId; readonly title: string; readonly semantic: string }[] = [
+  { id: 'HB001', title: 'Reducer-only local state', semantic: 'Do not replace rendering state with refs, wrappers or unrelated hooks; framework-managed state is not arbitrary local state.' },
+  { id: 'HB002', title: 'Isolated external Effects', semantic: 'The named external system, setup and cleanup must be truthful; nonempty annotations alone do not prove lifecycle correctness.' },
+  { id: 'HB003', title: 'Finite event-driven reducers', semantic: 'Events express domain actions, transitions exclude impossible states, and indirect effects do not enter reducers.' },
+  { id: 'HB004', title: 'No duplicated derived state', semantic: 'Compute values from current inputs rather than storing a second synchronized copy. This is not generically provable by static analysis.' },
+  { id: 'HB005', title: 'No type escape hatches', semantic: 'External values become trusted only through real validation; types and satisfies do not validate runtime data.' },
+  { id: 'HB006', title: 'Strict complete type coverage', semantic: 'Explicit missing-value branches must implement the correct behavior, not merely satisfy the compiler.' },
+  { id: 'HB007', title: 'Readonly shared inputs', semantic: 'Do not mutate shared inputs through deep aliases or third-party calls; local owned accumulators are permitted.' },
+  { id: 'HB008', title: 'Explicit business commands', semantic: 'Dedicated inputs must actually bound the operation; a renamed arbitrary patch is still an arbitrary patch.' },
+  { id: 'HB009', title: 'Schema-first external inputs', semantic: 'Validation must dominate every use; authorization is separate, and a parse token elsewhere in a file proves nothing.' },
+  { id: 'HB010', title: 'Server-only capabilities', semantic: 'Register unknown database/auth adapters and keep secrets outside client-reachable modules. Static graph results do not imply Next build passed.' },
+  { id: 'HB011', title: 'Explicit DTOs and request isolation', semantic: 'DTO fields are deliberately selected; caches do not mix user/request data. Structural shape alone cannot establish confidentiality.' },
+  { id: 'HB012', title: 'Observed asynchronous failures', semantic: 'Nonempty handlers must really handle failures; do not swallow Next redirect/notFound control flow.' },
+  { id: 'HB013', title: 'Distinct business identities', semantic: 'All business identities are modeled explicitly; a brand does not establish authorization and serialized values must be revalidated.' },
+  { id: 'HB014', title: 'Discriminated expected outcomes', semantic: 'Enumerate actual expected outcomes without turning defects or framework control flow into successful default values.' },
+  { id: 'HB015', title: 'Explicit external conditions', semantic: 'Do not hide clock, random or identity reads behind an innocent-looking helper; dependencies must be explicit.' },
+  { id: 'HB016', title: 'No silent business fallbacks', semantic: 'Required missing data takes an explicit failure path. Legitimate zero, empty collections and display defaults remain valid.' },
+  { id: 'HB017', title: 'Currency-aware exact money', semantic: 'When money is used, validate currency, precision, safe integer range, overflow, rounding and serialization; do not assume every currency has two decimals.' },
+  { id: 'HB018', title: 'Named boolean options', semantic: 'Named fields make intent visible; do not disguise business switches as framework callbacks to escape the public API restriction.' },
+  { id: 'HB019', title: 'Exhaustive finite business branches', semantic: 'Handle all finite outcomes, including if-based control flow; unknown external values are validated before narrowing.' },
+  { id: 'HB020', title: 'Parameterized database queries', semantic: 'Use the actual driver parameter semantics; values and identifiers are different, and unknown adapters require classification.' },
+];
+
+export const STOCK_RULES = {
+  '@typescript-eslint/no-explicit-any': 'error',
+  '@typescript-eslint/no-unsafe-argument': 'error',
+  '@typescript-eslint/no-unsafe-assignment': 'error',
+  '@typescript-eslint/no-unsafe-call': 'error',
+  '@typescript-eslint/no-unsafe-member-access': 'error',
+  '@typescript-eslint/no-unsafe-return': 'error',
+  '@typescript-eslint/consistent-type-assertions': ['error', { assertionStyle: 'never' }],
+  '@typescript-eslint/ban-ts-comment': ['error', { 'ts-ignore': true, 'ts-nocheck': true, 'ts-expect-error': true, 'ts-check': false }],
+  '@typescript-eslint/no-non-null-assertion': 'error',
+  '@typescript-eslint/no-floating-promises': ['error', { ignoreVoid: false, checkThenables: true }],
+  '@typescript-eslint/no-misused-promises': 'error',
+  '@typescript-eslint/switch-exhaustiveness-check': ['error', { considerDefaultExhaustiveForUnions: false }],
+  'no-empty': ['error', { allowEmptyCatch: false }],
+} as const;
