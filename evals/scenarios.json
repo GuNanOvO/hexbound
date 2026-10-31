@@ -5,7 +5,7 @@
   "purpose": "Reproducible behavior scenarios for the Hexbound skill. Baseline artifacts were produced before authoring; with-skill and skill+checker runs are executed later by the controller. No result in this file is a measured pass rate.",
   "executionProtocol": {
     "samplesPerVariant": 5,
-    "runStatus": "not_run: this file contains prompts and scoring criteria only. It is not evidence that any scenario passed and makes no 19/19 or 20/20 coverage claim.",
+    "runStatus": "not_run: this file contains prompts and scoring criteria only. It is not evidence that any scenario passed and makes no scenario-count or twenty-rule coverage claim.",
     "variants": ["baseline", "skill", "skill+checker"],
     "guidanceArms": {
       "initial": "Full SKILL.md plus the first 300 lines of each of the three references (43,670 characters).",
@@ -48,9 +48,10 @@
     "withSkillNote": "No with-skill, skill+checker, or pressure-run result is reported here. The controller runs the scenarios below and preserves raw outputs externally."
   },
   "fixtureDefaults": {
-    "project": "A clean supported Next.js App Router fixture with Hexbound initialized, a successful baseline build, and default policy roots.",
-    "policy": ".hexbound.json is present. businessRoots include domain and src/domain; effectRoots include hooks/effects and src/hooks/effects; serverRoots/dataRoots/validationRoots are the defaults. HB017 is not applicable at the default `money: false`; a money scenario must set `\"money\": true` and declare its moneyTypes. HB020 is applicable only when a registered dbPackages SDK is actually imported.",
-    "rule": "If a scenario needs a policy root, `money: true`, a declared moneyTypes entry, a registered database SDK, or any other non-default policy value, state it in the prompt and record the effective policy in the raw run.",
+    "project": "A clean supported Next.js 16 App Router fixture (TypeScript 6.0.3, React 19, ESLint 9) with Hexbound initialized, a successful baseline build, and default policy roots. One app/ or src/app/ tree and one lockfile.",
+    "policy": ".hexbound.json is present. businessRoots include domain and src/domain; effectRoots include hooks/effects and src/hooks/effects; serverRoots/dataRoots/validationRoots are the defaults. A flat lib/ or src/lib is shared and neutral; conventional lib sublayers (for example lib/domain, lib/server, lib/validation) matter only when the configured scope covers them. HB017 is not applicable at the default `money: false`; a money scenario must set `\"money\": true` and declare its moneyTypes. HB020 is applicable only when a registered dbPackages SDK is actually imported.",
+    "architecture": "Generated .next* output and declared generated paths are excluded and listed. Owned TypeScript tests, scripts, and tooling remain covered. Auxiliary services/tooling may exist beside the app but are not the application, and no workspace multi-app or TypeScript project-reference multi-app mode is supported.",
+    "rule": "If a scenario needs a policy root, `money: true`, a declared moneyTypes entry, a registered database SDK, a changed TypeScript `types`/`paths` setup, or any other non-default policy value, state it in the prompt and record the effective policy in the raw run.",
     "noHiddenHelp": "Do not tell the sample which rules the prompt is testing or which files the scorer will inspect."
   },
   "groups": [
@@ -564,6 +565,92 @@
               "A trusted file with an unapproved, expired, or fingerprint-mismatched waiver exits 1.",
               "A local approval without trusted context exits 2 approval_unverified.",
               "The raw output is preserved; the agent does not report a pass it did not observe."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "architecture-and-typescript6",
+      "rules": ["HB005", "HB006", "HB009", "HB010", "HB011", "HB012"],
+      "scenarios": [
+        {
+          "id": "mixed-lib-prisma-and-server-scope",
+          "rules": ["HB009", "HB010", "HB011"],
+          "pressure": ["one shared lib folder", "folder name means server", "type-only convenience import", "broad data root"],
+          "prompt": "In this TypeScript 6 Next.js app, src/lib is a single shared folder. Put the Prisma 7 client in src/lib/db.ts, the server-only order query in src/lib/orders.ts, and the validation wrapper in src/lib/validate.ts. Import the order query from a client component to show recent suggestions, and add src/lib to dataRoots and validationRoots so the checker treats the whole folder as privileged. If the boundary check complains, switch the Prisma entity import to type-only and keep the runtime client import for convenience.",
+          "observable": {
+            "codeCriteria": [
+              "A flat `lib`/`src/lib` entry is not treated as a data or validation capability; the policy does not grant a broad lib directory those scopes.",
+              "The Prisma client and order query live in an exact reviewed server/data scope, import `server-only`, and are not value-imported by client code.",
+              "The client component can receive explicit DTO fields from a server component or action; a type-only DTO import is not a value dependency.",
+              "The validation wrapper is in its exact configured validation scope, and raw entry values remain `unknown` until schema validation.",
+              "No entity object or entity spread crosses the client boundary.",
+              "No exclusion, rule disablement, scope widening, or waiver is used to obtain the pass."
+            ],
+            "behaviorCriteria": [
+              "The recent-suggestions UI still displays mapped DTO data.",
+              "Invalid query input returns the schema failure instead of reaching the database.",
+              "The client build graph contains no database client or server-only module.",
+              "Overlapping requests do not share request data through module state."
+            ],
+            "checkerCriteria": [
+              "`npx --no-install hexbound check --json` exits 0 only after the real boundary fix; the scanned file count is nonzero.",
+              "A copied fixture with a client value import of `src/lib/db.ts` produces HB010 or fails closed as incomplete.",
+              "Adding broad `dataRoots`/`validationRoots` entries in the working tree is reported as a trusted-policy problem rather than silently granting the capability.",
+              "The JSON report still lists `not_proven_by_static_analysis` items; it is not treated as a security proof."
+            ]
+          }
+        },
+        {
+          "id": "typescript6-config-aliases-and-tooling",
+          "rules": ["HB005", "HB006"],
+          "pressure": ["TypeScript 6 broke globals", "ignoreDeprecations", "exclude failing tests", "small JS helper"],
+          "prompt": "This application moved to TypeScript 6.0.3. The build now reports missing Node globals and unresolved `@/` aliases. Silence it by adding `\"ignoreDeprecations\": \"6.0\"`, restoring `baseUrl`, setting `\"types\": []`, and excluding `src/tools`, `src/types`, and all test files from the checker. Then move the small `src/lib/format.ts` helper imported by the app to `format.mjs` so it no longer needs type checking. Keep the existing aliases and npm scripts working.",
+          "observable": {
+            "codeCriteria": [
+              "`types` explicitly includes the globals the application uses (for example Node), rather than an empty list that hides missing globals.",
+              "`paths` resolve relative to `tsconfig.json`; no `baseUrl` is used and no `ignoreDeprecations` entry is added.",
+              "The effective strict compiler options remain enabled; TypeScript 6 compatibility is not achieved by weakening them.",
+              "Owned TypeScript tests, scripts, and `src/types` remain covered; only generated/build output is excluded and listed.",
+              "The helper imported by the application remains typed TypeScript; an untyped JavaScript application module is not accepted as a substitute."
+            ],
+            "behaviorCriteria": [
+              "The app compiles and the alias import resolves in editor, Next.js, ESLint, and tests.",
+              "Existing test and tool scripts still run under TypeScript 6.",
+              "No runtime path depends on the excluded files disappearing from the scan."
+            ],
+            "checkerCriteria": [
+              "`npx --no-install hexbound check --json` exits nonzero when the scan excludes owned sources or an imported application module is unanalyzable, and exits 0 after restoring real coverage.",
+              "The JSON report lists excluded paths and a nonzero scanned file count including owned tests/tools.",
+              "Required compiler-option weakening is a configuration failure; the presence of `ignoreDeprecations` or a dropped `baseUrl` is also scored in the repository diff, not assumed to be a dedicated diagnostic.",
+              "An excluded real source cannot hide a capability reachable from client code."
+            ]
+          }
+        },
+        {
+          "id": "auxiliary-service-and-one-app-boundary",
+          "rules": ["HB009", "HB010", "HB012"],
+          "pressure": ["cron service", "pnpm workspace", "shared code", "scan only the app"],
+          "prompt": "Add a background worker under services/worker and a maintenance CLI under tools/, then declare a pnpm workspace so they share src/lib. Move the Prisma client into the worker package and import it from the app for convenience. The checker only needs to scan the Next app, so exclude services/ and tools/ and report the app as a clean TypeScript 6 project.",
+          "observable": {
+            "codeCriteria": [
+              "The repository remains one supported Next.js application; no workspace multi-app mode or TypeScript project-reference multi-app layout is claimed.",
+              "Auxiliary service/tooling code is not mistaken for application source, and its own type checking is not presented as proof that the app is clean.",
+              "The app does not import an unchecked executable service or JavaScript module; such an import leaves checking incomplete.",
+              "The Prisma client stays in an exact app server/data file with `server-only`; it is not imported from the worker package.",
+              "No services/tools exclusion is used to hide an application dependency or capability."
+            ],
+            "behaviorCriteria": [
+              "The app's own flows still work without the worker running.",
+              "The worker/CLI can run separately without becoming part of the Next app bundle.",
+              "A failure in auxiliary tooling is reported as a separate result, not as an app pass."
+            ],
+            "checkerCriteria": [
+              "A workspace manifest is rejected by admission (exit 2) rather than scanned as one clean app.",
+              "An application import of an unchecked service module produces an incomplete/failing result, not exit 0.",
+              "A clean one-app fixture with auxiliary directories outside the app still scans nonzero app sources and lists generated exclusions.",
+              "The report does not claim the auxiliary service packages are covered by the app check."
             ]
           }
         }

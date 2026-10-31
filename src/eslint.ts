@@ -8,10 +8,12 @@ import { analyzeDomain } from './rules/domain.js';
 import { analyzeBoundaries } from './rules/boundaries.js';
 import { RULES, STOCK_RULES } from './rules/catalog.js';
 import { RULES_VERSION, defaultPolicy, loadPolicy } from './policy.js';
+import { analyzeCoverage } from './coverage.js';
+import { isAuxiliarySourcePath, isExcludedSourcePath } from './sources.js';
 import type { AnalysisContext, Finding, Policy } from './types.js';
 
 export function analyzeContext(context: AnalysisContext): Finding[] {
-  const findings = [...analyzeReact(context), ...analyzeDomain(context), ...analyzeBoundaries(context)];
+  const findings = [...analyzeReact(context), ...analyzeDomain(context), ...analyzeBoundaries(context), ...analyzeCoverage(context)];
   const seen = new Set<string>();
   return findings.filter(row => {
     const key = JSON.stringify([row.ruleId, row.file, row.line, row.column, row.message]);
@@ -26,20 +28,6 @@ function isProgram(value: unknown): value is ts.Program {
 
 const analysisCache = new WeakMap<ts.Program, Map<string, Finding[]>>();
 
-const IGNORED_DIRECTORIES: Readonly<Record<string, true>> = {
-  node_modules: true, '.next': true, '.git': true, dist: true, build: true, out: true, coverage: true, '.turbo': true, '.vercel': true,
-};
-
-/**
- * Whether a repository-relative path is outside the checked source set for the
- * same reasons as `discoverSources`: ignored build/dependency directories and
- * exact-or-nested policy generated paths. Exclusions stay visible through the
- * result, and `checkProject` separately classifies excluded sensitive imports.
- */
-export function isExcludedSourcePath(policy: Policy, relative: string): boolean {
-  if (relative.split('/').some(part => Object.hasOwn(IGNORED_DIRECTORIES, part))) return true;
-  return policy.generatedPaths.some(item => relative === item || relative.startsWith(item + '/'));
-}
 
 const PLUGIN_REGISTRY_KEY = Symbol.for('hexbound.plugin-registry.v1');
 type PluginRegistry = WeakSet<object>;
@@ -71,12 +59,57 @@ export function isHexboundPlugin(value: unknown): boolean {
   return true;
 }
 
-export function isVerifiedTypescriptParser(value: unknown): boolean {
-  return value === tseslint.parser;
+interface PackageMetadata {
+  readonly name?: unknown;
+  readonly version?: unknown;
 }
 
+function packageMetadata(value: unknown): PackageMetadata | undefined {
+  if (typeof value !== 'object' || value === null || !('meta' in value)) return undefined;
+  const meta = value.meta;
+  if (typeof meta !== 'object' || meta === null) return undefined;
+  return {
+    name: 'name' in meta ? meta.name : undefined,
+    version: 'version' in meta ? meta.version : undefined,
+  };
+}
+
+const TYPESCRIPT_ESLINT_PARSER_META = packageMetadata(tseslint.parser);
+const TYPESCRIPT_ESLINT_PLUGIN_META = packageMetadata(tseslint.plugin);
+
+function sameMajorVersion(candidate: unknown, expected: unknown): boolean {
+  if (typeof candidate !== 'string' || typeof expected !== 'string') return false;
+  const candidateMajor = Number(candidate.split('.')[0]);
+  return Number.isInteger(candidateMajor) && candidateMajor === Number(expected.split('.')[0]);
+}
+
+export function isVerifiedTypescriptParser(value: unknown): boolean {
+  const meta = packageMetadata(value);
+  const parseForESLint = typeof value === 'object' && value !== null && 'parseForESLint' in value ? value.parseForESLint : undefined;
+  return Boolean(meta && meta.name === 'typescript-eslint/parser'
+    && sameMajorVersion(meta.version, TYPESCRIPT_ESLINT_PARSER_META?.version)
+    && typeof parseForESLint === 'function');
+}
+
+/**
+ * Verify the effective TypeScript ESLint plugin by package metadata and the
+ * required rule implementations. A project may load its own compatible copy
+ * (for example through eslint-config-next or pnpm), so the major line and the
+ * required rules are checked instead of object identity or an exact patch.
+ */
 export function isVerifiedTypescriptEslintPlugin(value: unknown): boolean {
-  return value === tseslint.plugin;
+  const meta = packageMetadata(value);
+  if (!meta || meta.name !== '@typescript-eslint/eslint-plugin'
+    || !sameMajorVersion(meta.version, TYPESCRIPT_ESLINT_PLUGIN_META?.version)) return false;
+  const rulesValue = typeof value === 'object' && value !== null && 'rules' in value ? value.rules : undefined;
+  if (typeof rulesValue !== 'object' || rulesValue === null) return false;
+  const rules = new Map(Object.entries(rulesValue));
+  for (const name of Object.keys(STOCK_RULES)) {
+    if (!name.startsWith('@typescript-eslint/')) continue;
+    const rule = rules.get(name.slice('@typescript-eslint/'.length));
+    if (typeof rule !== 'object' || rule === null || !('create' in rule) || typeof rule.create !== 'function') return false;
+  }
+  return true;
 }
 
 export function createPlugin(rootInput = process.cwd(), policy: Policy = defaultPolicy): { meta: { name: string; version: string }; rules: Record<string, Rule.RuleModule> } {
@@ -97,7 +130,8 @@ export function createPlugin(rootInput = process.cwd(), policy: Policy = default
             if (!findings) {
               const files = program.getSourceFiles().filter(file => {
                 const relative = path.relative(root, file.fileName).split(path.sep).join('/');
-                return !relative.startsWith('../') && !path.isAbsolute(relative) && !isExcludedSourcePath(policy, relative);
+                return /\.(?:ts|tsx|mts|cts)$/.test(relative) && !relative.startsWith('../') && !path.isAbsolute(relative)
+                  && !isExcludedSourcePath(policy, relative) && !isAuxiliarySourcePath(root, relative);
               });
               findings = analyzeContext({ root, files, program, checker: program.getTypeChecker(), policy });
               byPolicy.set(key, findings);
@@ -118,7 +152,15 @@ export function createPlugin(rootInput = process.cwd(), policy: Policy = default
   return plugin;
 }
 
-export function createConfig(rootInput = process.cwd()): Linter.Config[] {
+export interface CreateConfigOptions {
+  /**
+   * A preceding configuration already registers `@typescript-eslint`.
+   * Reuse it instead of redefining the plugin, which ESLint rejects.
+   */
+  readonly reuseTypescriptEslint?: boolean;
+}
+
+export function createConfig(rootInput = process.cwd(), configOptions: CreateConfigOptions = {}): Linter.Config[] {
   const root = path.resolve(rootInput);
   const policy = fs.existsSync(path.join(root, '.hexbound.json')) ? loadPolicy(root) : defaultPolicy;
   const rules: Linter.RulesRecord = {};
@@ -127,12 +169,15 @@ export function createConfig(rootInput = process.cwd()): Linter.Config[] {
     else rules[name] = [...value];
   }
   for (const metadata of RULES) rules[`hexbound/${metadata.id.toLowerCase()}`] = 'error';
+  const plugins = configOptions.reuseTypescriptEslint
+    ? { hexbound: createPlugin(root, policy) }
+    : { '@typescript-eslint': tseslint.plugin, hexbound: createPlugin(root, policy) };
   return [{
     name: 'hexbound/complete-typescript-profile',
     files: ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'],
-    ignores: ['node_modules/**', '.next/**', 'dist/**', ...policy.generatedPaths],
+    ignores: ['**/node_modules/**', '**/.next/**', '**/.next-*/**', '**/dist/**', '**/.superpowers/**', '**/.worktrees/**', ...policy.generatedPaths],
     languageOptions: { parser: tseslint.parser, parserOptions: { project: path.join(root, 'tsconfig.json'), tsconfigRootDir: root, ecmaFeatures: { jsx: true } } },
-    plugins: { '@typescript-eslint': tseslint.plugin, hexbound: createPlugin(root, policy) },
+    plugins,
     linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: 'error' },
     rules,
   }];

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import ts from 'typescript';
 import { finding, inRoots, relativeFile, unwrapSymbol, walk } from '../analysis.js';
+import { hasServerEnvironment, isDatabaseSpecifier, isServerAuthSpecifier, isServerModuleName } from '../capabilities.js';
 import type { AnalysisContext, Finding } from '../types.js';
 
 const PARSE_METHODS: Record<string, true> = { parse: true, parseAsync: true, safeParse: true, safeParseAsync: true };
@@ -22,6 +23,7 @@ interface ModuleInfo {
   readonly client: boolean;
   readonly useServer: boolean;
   readonly serverOnly: boolean;
+  readonly authImports: boolean;
   readonly edges: readonly ValueEdge[];
   readonly computedImports: readonly ts.CallExpression[];
   readonly dbImports: readonly ts.Node[];
@@ -79,9 +81,6 @@ function isServerOnlySpecifier(specifier: string): boolean {
   return specifier === 'server-only';
 }
 
-function isDbSpecifier(context: AnalysisContext, specifier: string): boolean {
-  return context.policy.dbPackages.some(pkg => specifier === pkg || specifier.startsWith(pkg + '/'));
-}
 
 function moduleSpecifierText(node: ts.ImportDeclaration | ts.ExportDeclaration): string | undefined {
   const specifier = node.moduleSpecifier;
@@ -108,11 +107,13 @@ function buildModules(context: AnalysisContext): Map<string, ModuleInfo> {
     const computedImports: ts.CallExpression[] = [];
     const dbImports: ts.Node[] = [];
     let serverOnly = false;
+    let authImports = false;
 
     const addEdge = (node: ts.Node, specifier: string, importName: string | undefined): void => {
       edges.push({ node, specifier, importName });
       if (isServerOnlySpecifier(specifier)) serverOnly = true;
-      if (isDbSpecifier(context, specifier)) dbImports.push(node);
+      if (isServerAuthSpecifier(context.policy, specifier)) authImports = true;
+      if (isDatabaseSpecifier(context.policy, specifier)) dbImports.push(node);
     };
 
     walk(file, node => {
@@ -182,6 +183,7 @@ function buildModules(context: AnalysisContext): Map<string, ModuleInfo> {
       client: fileHasDirective(file, 'use client'),
       useServer: fileHasDirective(file, 'use server'),
       serverOnly,
+      authImports,
       edges,
       computedImports,
       dbImports,
@@ -191,12 +193,16 @@ function buildModules(context: AnalysisContext): Map<string, ModuleInfo> {
 }
 
 function isSensitiveModule(context: AnalysisContext, module: ModuleInfo): boolean {
-  return module.serverOnly
+  if (module.serverOnly
+    || module.authImports
     || module.dbImports.length > 0
     || inRoots(context, module.file, context.policy.serverRoots)
     || inRoots(context, module.file, context.policy.serverServicesRoots)
     || inRoots(context, module.file, context.policy.dataRoots)
-    || isServerEnvFile(context, module.relative);
+    || isServerEnvFile(context, module.relative)) {
+    return true;
+  }
+  return isServerModuleName(module.relative) || hasServerEnvironment(module.file, context.checker);
 }
 
 function isServerEnvFile(context: AnalysisContext, relative: string): boolean {
@@ -296,8 +302,10 @@ function analyzeModuleGraph(context: AnalysisContext, modules: ReadonlyMap<strin
         report(edge.node, 'A client-reachable module imports the server-only marker; server-only modules must not be reachable from use client code.');
       }
       if (!target) {
-        if (isDbSpecifier(context, edge.specifier)) {
+        if (isDatabaseSpecifier(context.policy, edge.specifier)) {
           report(edge.node, 'Client-reachable code imports a database SDK; database access must stay in server/data.');
+        } else if (isServerAuthSpecifier(context.policy, edge.specifier)) {
+          report(edge.node, 'Client-reachable code imports a server authentication module; authentication must stay on the server and be exposed through a Server Action endpoint.');
         }
         continue;
       }
@@ -419,8 +427,13 @@ function collectEntries(context: AnalysisContext): Entry[] {
     if (isProxyFile(relative)) {
       for (const exported of exportedFunctions(checker, file, name => name === 'default' || name === 'proxy' || name === 'middleware')) add(exported.node, 'proxy');
     }
-    if (isPageOrLayoutFile(relative)) {
+    if (isAppPageFile(relative)) {
       for (const exported of exportedFunctions(checker, file, name => name === 'default')) add(exported.node, 'page');
+    }
+    if (isPageOrLayoutFile(relative)) {
+      for (const exported of exportedFunctions(checker, file, name => name === 'generateMetadata' || name === 'generateViewport')) {
+        add(exported.node, 'page');
+      }
     }
     if (fileHasDirective(file, 'use server')) {
       for (const exported of exportedFunctions(checker, file, () => true)) add(exported.node, 'action');
@@ -435,6 +448,10 @@ function collectEntries(context: AnalysisContext): Entry[] {
 
 function isRouteFile(relative: string): boolean {
   return /(^|\/)(?:src\/)?app\//.test(relative) && /route\.(?:ts|tsx|mts|cts)$/.test(relative);
+}
+
+function isAppPageFile(relative: string): boolean {
+  return /(^|\/)(?:src\/)?app\//.test(relative) && /(?:page|layout|template)\.(?:ts|tsx|mts|cts)$/.test(relative);
 }
 
 function isPageOrLayoutFile(relative: string): boolean {
@@ -772,14 +789,180 @@ function analyzeInputs(context: AnalysisContext, entries: readonly Entry[], find
   }
 }
 
-function isEntityFile(context: AnalysisContext, file: ts.SourceFile): boolean {
-  const relative = relativeFile(context, file);
-  return inRoots(context, file, context.policy.dataRoots)
-    || context.policy.generatedPaths.some(generated => relative === generated || relative.endsWith('/' + generated));
+const PRISMA_MODULES: Readonly<Record<string, true>> = {
+  '@prisma/client': true,
+  '.prisma/client': true,
+  prisma: true,
+};
+const prismaModelNameCache = new WeakMap<ts.SourceFile, ReadonlySet<string> | undefined>();
+const prismaRuntimeImportCache = new WeakMap<ts.SourceFile, { readonly policy: AnalysisContext['policy']; readonly value: boolean }>();
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isTypeAssertionExpression(current)
+    || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current)) {
+    current = current.expression;
+  }
+  return current;
 }
 
-function symbolInEntityFile(context: AnalysisContext, symbol: ts.Symbol): boolean {
-  return symbol.declarations?.some(declaration => isEntityFile(context, declaration.getSourceFile())) ?? false;
+function isGeneratedPath(context: AnalysisContext, relative: string): boolean {
+  return context.policy.generatedPaths.some(item => relative === item || relative.startsWith(item.replace(/\/$/, '') + '/'));
+}
+
+function hasRegisteredPrisma(context: AnalysisContext): boolean {
+  return context.policy.dbPackages.some(pkg => pkg === '@prisma/client' || pkg.startsWith('@prisma/client/')
+    || pkg === '.prisma/client' || pkg.startsWith('.prisma/')
+    || pkg === 'prisma' || pkg.startsWith('prisma/'));
+}
+
+function isPrismaRuntimeSpecifier(context: AnalysisContext, specifier: string): boolean {
+  if (!hasRegisteredPrisma(context)) return false;
+  return specifier === '@prisma/client' || specifier.startsWith('@prisma/client/')
+    || specifier === '@prisma/adapter-pg' || specifier.startsWith('@prisma/adapter-pg/')
+    || specifier === '.prisma/client' || specifier.startsWith('.prisma/')
+    || specifier === 'prisma' || specifier.startsWith('prisma/');
+}
+
+/** Generated files must really import a registered Prisma runtime to gain provenance. */
+function fileImportsPrismaRuntime(context: AnalysisContext, file: ts.SourceFile): boolean {
+  const cached = prismaRuntimeImportCache.get(file);
+  if (cached && cached.policy === context.policy) return cached.value;
+  let value = false;
+  for (const statement of file.statements) {
+    let specifier: string | undefined;
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      specifier = statement.moduleSpecifier.text;
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      specifier = statement.moduleSpecifier.text;
+    } else if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+      && statement.moduleReference.expression && ts.isStringLiteral(statement.moduleReference.expression)) {
+      specifier = statement.moduleReference.expression.text;
+    }
+    if (specifier !== undefined && isPrismaRuntimeSpecifier(context, specifier)) {
+      value = true;
+      break;
+    }
+  }
+  prismaRuntimeImportCache.set(file, { policy: context.policy, value });
+  return value;
+}
+
+function declarationModuleName(declaration: ts.Declaration): string | undefined {
+  let current: ts.Node | undefined = declaration;
+  while (current) {
+    if (ts.isModuleDeclaration(current) && ts.isStringLiteral(current.name)) return current.name.text;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function isPrismaClientFile(fileName: string): boolean {
+  const normalized = fileName.replace(/\\/g, '/');
+  return normalized.includes('/node_modules/.prisma/client/') || normalized.includes('/node_modules/@prisma/client/');
+}
+
+function isPrismaOrigin(context: AnalysisContext, declaration: ts.Declaration): boolean {
+  const moduleName = declarationModuleName(declaration);
+  if (moduleName !== undefined && PRISMA_MODULES[moduleName] === true) return true;
+  const file = declaration.getSourceFile();
+  if (isPrismaClientFile(file.fileName)) return true;
+  return isGeneratedPath(context, relativeFile(context, file)) && fileImportsPrismaRuntime(context, file);
+}
+
+function prismaModelNames(file: ts.SourceFile): ReadonlySet<string> | undefined {
+  if (prismaModelNameCache.has(file)) return prismaModelNameCache.get(file);
+  const names = new Set<string>();
+  const collectLiterals = (node: ts.TypeNode): void => {
+    if (ts.isUnionTypeNode(node) || ts.isIntersectionTypeNode(node)) {
+      for (const part of node.types) collectLiterals(part);
+      return;
+    }
+    if (ts.isLiteralTypeNode(node) && ts.isStringLiteral(node.literal)) names.add(node.literal.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'ModelName' && node.initializer) {
+      const initializer = unwrapExpression(node.initializer);
+      if (ts.isObjectLiteralExpression(initializer)) {
+        for (const property of initializer.properties) {
+          if ((ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property))
+            && (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name))) {
+            names.add(property.name.text);
+          }
+        }
+      }
+    }
+    if (ts.isTypeAliasDeclaration(node) && node.name.text === 'ModelName') collectLiterals(node.type);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  const result = names.size > 0 ? names : undefined;
+  prismaModelNameCache.set(file, result);
+  return result;
+}
+
+function typeNodeReferencesName(node: ts.TypeNode, expected: string): boolean {
+  let found = false;
+  const visit = (current: ts.Node): void => {
+    if (found) return;
+    if (ts.isTypeReferenceNode(current)) {
+      const name = ts.isIdentifier(current.typeName) ? current.typeName.text : current.typeName.right.text;
+      if (name === expected) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function isPrismaModelDeclaration(context: AnalysisContext, declaration: ts.Declaration): boolean {
+  if (!isPrismaOrigin(context, declaration)) return false;
+  if (ts.isEnumDeclaration(declaration) || ts.isEnumMember(declaration)) return false;
+  const name = ts.isTypeAliasDeclaration(declaration) || ts.isInterfaceDeclaration(declaration)
+    || ts.isClassDeclaration(declaration) || ts.isEnumDeclaration(declaration)
+    ? declaration.name?.text
+    : undefined;
+  if (name === undefined) return false;
+  const modelNames = prismaModelNames(declaration.getSourceFile());
+  if (modelNames !== undefined) return modelNames.has(name);
+  return ts.isTypeAliasDeclaration(declaration) && typeNodeReferencesName(declaration.type, '$' + name + 'Payload');
+}
+
+/** Generated SDK helpers and argument schemas are not entity origins. */
+function symbolIsPrismaNonModel(context: AnalysisContext, symbol: ts.Symbol): boolean {
+  const declarations = symbol.declarations ?? [];
+  if (!declarations.some(declaration => isPrismaOrigin(context, declaration))) return false;
+  return !declarations.some(declaration => isPrismaModelDeclaration(context, declaration));
+}
+
+function symbolIsEntity(context: AnalysisContext, symbol: ts.Symbol): boolean {
+  return symbol.declarations?.some(declaration => {
+    if (isPrismaOrigin(context, declaration)) return isPrismaModelDeclaration(context, declaration);
+    return inRoots(context, declaration.getSourceFile(), context.policy.dataRoots);
+  }) ?? false;
+}
+
+/** A Prisma model alias may resolve to an anonymous union; keep its syntax origin. */
+function typeNodeIsPrismaModel(context: AnalysisContext, type: ts.TypeNode): boolean {
+  if (ts.isTypeReferenceNode(type)) {
+    const symbol = context.checker.getSymbolAtLocation(type.typeName);
+    const target = symbol ? unwrapSymbol(context.checker, symbol) ?? symbol : undefined;
+    if (target?.declarations?.some(declaration => ts.isTypeAliasDeclaration(declaration) && isPrismaModelDeclaration(context, declaration))) return true;
+    return type.typeArguments?.some(argument => typeNodeIsPrismaModel(context, argument)) ?? false;
+  }
+  if (ts.isArrayTypeNode(type)) return typeNodeIsPrismaModel(context, type.elementType);
+  if (ts.isParenthesizedTypeNode(type) || ts.isTypeOperatorNode(type)) return typeNodeIsPrismaModel(context, type.type);
+  if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) return type.types.some(part => typeNodeIsPrismaModel(context, part));
+  return false;
+}
+
+function declarationTypeIsPrismaModel(context: AnalysisContext, declaration: ts.Declaration): boolean {
+  if ((ts.isVariableDeclaration(declaration) || ts.isParameter(declaration) || ts.isPropertyDeclaration(declaration)
+    || ts.isPropertySignature(declaration)) && declaration.type) return typeNodeIsPrismaModel(context, declaration.type);
+  return false;
 }
 
 function isEntityType(context: AnalysisContext, type: ts.Type): boolean {
@@ -801,7 +984,7 @@ function isEntityType(context: AnalysisContext, type: ts.Type): boolean {
       if (element && visit(element)) return true;
     }
     for (const symbol of [candidate.symbol, candidate.aliasSymbol]) {
-      if (symbol && symbolInEntityFile(context, symbol)) return true;
+      if (symbol && symbolIsEntity(context, symbol)) return true;
     }
     if (candidate.aliasSymbol) {
       const declared = context.checker.getDeclaredTypeOfSymbol(candidate.aliasSymbol);
@@ -830,6 +1013,7 @@ function typeContainsEntity(context: AnalysisContext, type: ts.Type, location: t
     return false;
   }
   const named = type.aliasSymbol ?? type.symbol;
+  if (named && symbolIsPrismaNonModel(context, named)) return false;
   if (named?.declarations && named.declarations.length > 0
     && named.declarations.every(declaration => declaration.getSourceFile().isDeclarationFile)) {
     return false;
@@ -882,6 +1066,7 @@ function containsEntityValue(context: AnalysisContext, expression: ts.Expression
     const declaration = target?.valueDeclaration ?? target?.declarations?.[0];
     if (declaration && !seen.has(declaration)) {
       seen.add(declaration);
+      if (declarationTypeIsPrismaModel(context, declaration)) return true;
       if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
         return containsEntityValue(context, declaration.initializer, seen);
       }
@@ -944,7 +1129,7 @@ function analyzeEntityBoundaries(context: AnalysisContext, entries: readonly Ent
       walk(file, node => {
         if (!ts.isTypeReferenceNode(node) && !ts.isImportTypeNode(node)) return;
         const type = context.checker.getTypeFromTypeNode(node);
-        if (isEntityType(context, type)) {
+        if (isEntityType(context, type) || typeNodeIsPrismaModel(context, node)) {
           findings.push(finding(
             context,
             node,
@@ -1002,7 +1187,7 @@ function analyzeEntityBoundaries(context: AnalysisContext, entries: readonly Ent
     if (fn.type) {
       const annotation = context.checker.getTypeFromTypeNode(fn.type);
       const resolved = context.checker.getAwaitedType(annotation) ?? annotation;
-      if (isEntityType(context, resolved)) {
+      if (isEntityType(context, resolved) || typeNodeIsPrismaModel(context, fn.type)) {
         findings.push(finding(
           context,
           fn.type,
@@ -1052,10 +1237,11 @@ function isServerStateFile(context: AnalysisContext, file: ts.SourceFile): boole
     || inRoots(context, file, context.policy.dataRoots)) {
     return true;
   }
+  const relative = relativeFile(context, file);
+  if (isServerModuleName(relative) || hasServerEnvironment(file, context.checker)) return true;
   if (fileHasDirective(file, 'use client')) return false;
   if (fileHasDirective(file, 'use server')) return true;
-  const relative = relativeFile(context, file);
-  return isProxyFile(relative) || isRouteFile(relative) || isPageOrLayoutFile(relative);
+  return isProxyFile(relative) || isRouteFile(relative) || isAppPageFile(relative);
 }
 
 function isMutableContainer(initializer: ts.Expression): boolean {

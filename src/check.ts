@@ -3,12 +3,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { ESLint } from 'eslint';
-import { analyzeContext, isExcludedSourcePath, isHexboundPlugin, isVerifiedTypescriptEslintPlugin, isVerifiedTypescriptParser } from './eslint.js';
+import { analyzeContext, isHexboundPlugin, isVerifiedTypescriptEslintPlugin, isVerifiedTypescriptParser } from './eslint.js';
 import { RULES, STOCK_RULES } from './rules/catalog.js';
 import { RULES_VERSION, loadPolicy, policyDrift, trustedPolicy, applyWaivers } from './policy.js';
 import { createProjectContext, inspectProject } from './project.js';
 import { finding, relativeFile, walk } from './analysis.js';
-import type { AnalysisContext, CheckResult, Finding, Policy, RuleId } from './types.js';
+import { APPLICATION_DIRECTORIES } from './sources.js';
+import { isDatabaseSpecifier } from './capabilities.js';
+import type { AnalysisContext, CheckResult, Finding, RuleId } from './types.js';
 
 export interface CheckOptions { readonly root?: string; readonly trustedPolicy?: string; }
 
@@ -25,6 +27,10 @@ const STOCK_RULE_MAP: Readonly<Record<string, RuleId>> = {
   '@typescript-eslint/no-floating-promises': 'HB012',
   '@typescript-eslint/no-misused-promises': 'HB012',
   '@typescript-eslint/switch-exhaustiveness-check': 'HB019',
+  'react-hooks/rules-of-hooks': 'HB002',
+  'react-hooks/exhaustive-deps': 'HB002',
+  'react-hooks/set-state-in-effect': 'HB002',
+  'react-hooks/preserve-manual-memoization': 'HB004',
   'no-empty': 'HB012',
 };
 
@@ -32,60 +38,6 @@ function stableFingerprint(ruleId: RuleId, file: string, line: number, column: n
   return createHash('sha256').update(JSON.stringify([ruleId, file, line, column, evidence])).digest('hex');
 }
 
-function inScope(relative: string, scope: string): boolean {
-  if (relative === scope) return true;
-  return relative.startsWith(scope.replace(/\/$/, '') + '/');
-}
-
-function isServerEnvRelative(policy: Policy, relative: string): boolean {
-  const matchesEnv = policy.envFiles.some(env => relative === env || relative.endsWith('/' + env));
-  if (!matchesEnv) return false;
-  const base = relative.split('/').pop() ?? relative;
-  return !/public/i.test(base);
-}
-
-function sensitiveRelative(policy: Policy, relative: string): boolean {
-  return policy.serverRoots.some(scope => inScope(relative, scope))
-    || policy.serverServicesRoots.some(scope => inScope(relative, scope))
-    || policy.dataRoots.some(scope => inScope(relative, scope))
-    || isServerEnvRelative(policy, relative);
-}
-
-function hasTopLevelDirective(file: ts.SourceFile, directive: string): boolean {
-  for (const statement of file.statements) {
-    if (!ts.isExpressionStatement(statement) || !ts.isStringLiteral(statement.expression)) return false;
-    if (statement.expression.text === directive) return true;
-  }
-  return false;
-}
-
-function sourceHasServerCapability(source: ts.SourceFile, policy: Policy): boolean {
-  let sensitive = false;
-  walk(source, node => {
-    if (sensitive) return;
-    let specifier: string | undefined;
-    if (ts.isImportDeclaration(node)) {
-      if (node.importClause?.isTypeOnly) return;
-      if (ts.isStringLiteral(node.moduleSpecifier)) specifier = node.moduleSpecifier.text;
-    } else if (ts.isExportDeclaration(node)) {
-      if (node.isTypeOnly) return;
-      if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) specifier = node.moduleSpecifier.text;
-    } else if (ts.isImportEqualsDeclaration(node)) {
-      if (node.isTypeOnly) return;
-      const reference = node.moduleReference;
-      if (ts.isExternalModuleReference(reference) && reference.expression && ts.isStringLiteral(reference.expression)) specifier = reference.expression.text;
-    } else if (ts.isCallExpression(node)) {
-      const callee = node.expression;
-      const dynamic = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const required = ts.isIdentifier(callee) && callee.text === 'require';
-      const argument = node.arguments[0];
-      if ((dynamic || required) && argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) specifier = argument.text;
-    }
-    if (!specifier) return;
-    if (specifier === 'server-only' || policy.dbPackages.some(name => specifier === name || specifier.startsWith(name + '/'))) sensitive = true;
-  });
-  return sensitive;
-}
 
 const TEXTUAL_LITERAL = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.NoSubstitutionTemplateLiteral,
@@ -132,96 +84,6 @@ function suppressionFindings(context: AnalysisContext): Finding[] {
   return found;
 }
 
-interface ModuleEdge { readonly node: ts.Node; readonly specifier: string; }
-
-function moduleEdges(file: ts.SourceFile): ModuleEdge[] {
-  const edges: ModuleEdge[] = [];
-  walk(file, node => {
-    if (ts.isImportDeclaration(node)) {
-      const specifier = node.moduleSpecifier;
-      if (!ts.isStringLiteral(specifier)) return;
-      const clause = node.importClause;
-      if (clause?.isTypeOnly) return;
-      const bindings = clause?.namedBindings;
-      if (bindings && ts.isNamedImports(bindings) && bindings.elements.every(element => element.isTypeOnly) && !clause?.name) return;
-      edges.push({ node, specifier: specifier.text });
-      return;
-    }
-    if (ts.isExportDeclaration(node)) {
-      if (node.isTypeOnly) return;
-      const specifier = node.moduleSpecifier;
-      if (!specifier || !ts.isStringLiteral(specifier)) return;
-      const clause = node.exportClause;
-      if (clause && ts.isNamedExports(clause) && clause.elements.every(element => element.isTypeOnly)) return;
-      edges.push({ node, specifier: specifier.text });
-      return;
-    }
-    if (ts.isImportEqualsDeclaration(node)) {
-      if (node.isTypeOnly) return;
-      const reference = node.moduleReference;
-      if (!ts.isExternalModuleReference(reference) || !reference.expression || !ts.isStringLiteral(reference.expression)) return;
-      edges.push({ node, specifier: reference.expression.text });
-      return;
-    }
-    if (!ts.isCallExpression(node)) return;
-    const callee = node.expression;
-    const dynamic = callee.kind === ts.SyntaxKind.ImportKeyword;
-    const required = ts.isIdentifier(callee) && callee.text === 'require';
-    if (!dynamic && !required) return;
-    const argument = node.arguments[0];
-    if (argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) edges.push({ node, specifier: argument.text });
-  });
-  return edges;
-}
-
-/**
- * `discoverSources` omits build/generated directories from direct analysis.
- * An excluded module under a server/data/env scope must not disappear from
- * both sides: when a client-reachable module imports it, report HB010 here or
- * fail checking when the target cannot be classified.
- */
-function excludedBoundaryFindings(context: AnalysisContext): { findings: Finding[]; errors: string[]; infrastructure: boolean } {
-  const findings: Finding[] = []; const errors: string[] = []; let infrastructure = false;
-  const policy = context.policy;
-  const managed = new Map<string, ts.SourceFile>();
-  for (const file of context.files) managed.set(path.resolve(file.fileName), file);
-  const programFiles = new Map<string, ts.SourceFile>();
-  for (const file of context.program.getSourceFiles()) programFiles.set(path.resolve(file.fileName), file);
-  const queue = context.files.filter(file => hasTopLevelDirective(file, 'use client'));
-  const visited = new Set(queue.map(file => path.resolve(file.fileName)));
-  for (let index = 0; index < queue.length; index += 1) {
-    const file = queue[index];
-    if (!file) continue;
-    for (const edge of moduleEdges(file)) {
-      const resolved = ts.resolveModuleName(edge.specifier, file.fileName, context.program.getCompilerOptions(), ts.sys).resolvedModule?.resolvedFileName;
-      if (!resolved) continue;
-      const targetPath = path.resolve(resolved);
-      const target = managed.get(targetPath);
-      if (target) {
-        if (visited.has(targetPath)) continue;
-        const targetRelative = relativeFile(context, target);
-        if (hasTopLevelDirective(target, 'use server') || sensitiveRelative(policy, targetRelative) || sourceHasServerCapability(target, policy)) continue;
-        visited.add(targetPath); queue.push(target); continue;
-      }
-      const relative = path.relative(context.root, targetPath).split(path.sep).join('/');
-      if (relative.startsWith('../') || path.isAbsolute(relative)) continue;
-      if (relative.split('/').some(part => part === 'node_modules' || part === '.git')) continue;
-      if (!isExcludedSourcePath(policy, relative)) continue;
-      if (/\.d\.[cm]?ts$/.test(relative)) continue;
-      const targetSource = programFiles.get(targetPath);
-      if (targetSource?.isDeclarationFile) continue;
-      const sensitive = sensitiveRelative(policy, relative) || (targetSource ? sourceHasServerCapability(targetSource, policy) : false);
-      if (sensitive) {
-        findings.push(finding(context, edge.node, 'HB010', `Client-reachable module imports excluded sensitive server module "${relative}"; excluded paths cannot hide server-only dependencies`));
-        continue;
-      }
-      if (targetSource || policy.generatedPaths.some(item => relative === item || relative.startsWith(item + '/'))) continue;
-      errors.push(`Excluded first-party module "${relative}" imported by ${relativeFile(context, file)} cannot be classified; checking is incomplete`);
-      infrastructure = true;
-    }
-  }
-  return { findings, errors, infrastructure };
-}
 
 function nodeAt(source: ts.SourceFile, line: number, column: number): ts.Node {
   let offset: number;
@@ -258,15 +120,14 @@ export async function checkProject(options: CheckOptions = {}): Promise<CheckRes
     const loaded = createProjectContext(root, policy); const context = loaded.context;
     scannedFiles = context.files.map(file => relativeFile(context, file)); excludedFiles = loaded.excluded;
     errors.push(...loaded.compilerErrors);
-    const databaseSpecifier = (value: string): boolean => policy.dbPackages.some(name => value === name || value.startsWith(name + '/'));
     let hasDatabase = policy.dbPackages.some(name => Object.hasOwn(facts.manifest.dependencies ?? {}, name) || Object.hasOwn(facts.manifest.devDependencies ?? {}, name));
     let declaredMoney = false;
     for (const source of context.files) {
       walk(source, node => {
-        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && databaseSpecifier(node.moduleSpecifier.text)) hasDatabase = true;
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && isDatabaseSpecifier(policy, node.moduleSpecifier.text)) hasDatabase = true;
         if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
           const argument = node.arguments[0];
-          if (argument && ts.isStringLiteral(argument) && databaseSpecifier(argument.text)) hasDatabase = true;
+          if (argument && ts.isStringLiteral(argument) && isDatabaseSpecifier(policy, argument.text)) hasDatabase = true;
         }
         if ((ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) && policy.moneyTypes.includes(node.name.text)) declaredMoney = true;
       });
@@ -280,10 +141,8 @@ export async function checkProject(options: CheckOptions = {}): Promise<CheckRes
     semanticReview = RULES.filter(rule => !(rule.id === 'HB017' && !hasMoney) && !(rule.id === 'HB020' && !hasDatabase)).map(rule => ({ ruleId: rule.id, status: 'not_proven_by_static_analysis', requirement: rule.semantic }));
     findings.push(...analyzeContext(context));
     findings.push(...suppressionFindings(context));
-    const boundaries = excludedBoundaryFindings(context);
-    findings.push(...boundaries.findings); errors.push(...boundaries.errors); infrastructure ||= boundaries.infrastructure;
     const scopeValues = [
-      'app', 'components', 'hooks', 'lib', 'domain', 'server', 'validation', 'env', 'tests', 'e2e', 'scripts', 'types',
+      ...Object.keys(APPLICATION_DIRECTORIES),
       ...policy.businessRoots, ...policy.serverRoots, ...policy.serverServicesRoots, ...policy.effectRoots,
       ...policy.dataRoots, ...policy.validationRoots, ...policy.cacheRoots, ...policy.envFiles,
     ];
@@ -356,7 +215,7 @@ export async function checkProject(options: CheckOptions = {}): Promise<CheckRes
     }
     const sentinelFile = context.files.find(file => !file.isDeclarationFile);
     if (!sentinelFile) throw new Error('No implementation source available for the ESLint enforcement sentinel');
-    const sentinel = await eslint.lintText('import { useState } from "react"; export const forbidden = useState;', { filePath: sentinelFile.fileName, warnIgnored: false });
+    const sentinel = await eslint.lintText('import { useState } from "react";', { filePath: sentinelFile.fileName, warnIgnored: false });
     if (!sentinel.some(result => result.messages.some(message => message.ruleId === 'hexbound/hb001' && message.severity === 2))) throw new Error('ESLint enforcement sentinel did not reject a known forbidden React import');
     const stockSentinel = await eslint.lintText('export const forbidden = "ready" as any;', { filePath: sentinelFile.fileName, warnIgnored: false });
     if (!stockSentinel.some(result => result.messages.some(message => message.ruleId === '@typescript-eslint/no-explicit-any' && message.severity === 2))) throw new Error('ESLint stock-rule sentinel did not reject an explicit any');

@@ -763,6 +763,55 @@ test('HB020 ignores RegExp exec and is inactive without database packages', () =
   assert.equal(rule(disabled, 'HB020').length, 0);
 });
 
+test('HB020 recognizes a generated Prisma 7 client that imports a registered runtime or adapter', () => {
+  const findings = analyze({
+    'src/generated/prisma/client.ts': [
+      "import { PrismaPg } from '@prisma/adapter-pg';",
+      'export namespace Prisma {',
+      '  export type $UserPayload = { id: string };',
+      '}',
+      'export type User = Prisma.$UserPayload;',
+      'export declare class PrismaClient {',
+      '  constructor(options?: { adapter?: PrismaPg });',
+      '  $queryRawUnsafe<T = unknown>(query: string): Promise<T>;',
+      '  $queryRaw<T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;',
+      '}',
+    ].join('\n'),
+    'src/generated/helper.ts': [
+      'export class QueryHelper {',
+      '  $queryRawUnsafe<T = unknown>(query: string): Promise<T> {',
+      '    return Promise.resolve(query as T);',
+      '  }',
+      '}',
+    ].join('\n'),
+    'src/lib/db.ts': [
+      "import { PrismaClient } from '@/src/generated/prisma/client';",
+      "import { PrismaPg } from '@prisma/adapter-pg';",
+      "const adapter = new PrismaPg('postgres://localhost/app');",
+      'export const prisma = new PrismaClient({ adapter });',
+      'export function unsafe(id: string): Promise<unknown> {',
+      "  return prisma.$queryRawUnsafe('SELECT * FROM users WHERE id = ' + id);",
+      '}',
+      'export function safe(id: string): Promise<unknown> {',
+      "  return prisma.$queryRaw('SELECT * FROM users WHERE id = $1', id);",
+      '}',
+    ].join('\n'),
+    'src/lib/other.ts': [
+      "import { QueryHelper } from '@/src/generated/helper';",
+      'interface LocalQuery { $queryRawUnsafe(query: string): Promise<unknown>; }',
+      'declare const db: LocalQuery;',
+      'export function run(query: string): Promise<unknown> {',
+      '  const helper = new QueryHelper();',
+      '  helper.$queryRawUnsafe(query);',
+      '  return db.$queryRawUnsafe(query);',
+      '}',
+    ].join('\n'),
+  }, { generatedPaths: ['next-env.d.ts', 'src/generated'] });
+  const rows = rule(findings, 'HB020');
+  assert.equal(rows.length, 1, 'only the unsafe call on the generated Prisma client is flagged');
+  assert.equal(rows[0]?.file, 'src/lib/db.ts');
+});
+
 test('money helper parses exact decimal strings without floating point', () => {
   const tenCents = parseMoney('0.10', 'USD');
   const twentyCents = parseMoney('0.20', 'USD');

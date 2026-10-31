@@ -124,6 +124,8 @@ const rawOrigin = process.env.NEXT_PUBLIC_API_ORIGIN;
 
 **Limits:** the checker validates the effective compiler options, source coverage, and `tsc` result. It does not decide whether the chosen missing-value behavior is the correct business behavior. `exactOptionalPropertyTypes` makes `{ value: undefined }` different from `{}`; that difference must be respected at component and DTO boundaries.
 
+Under TypeScript 6, state the global types the project needs explicitly and resolve `paths` relative to `tsconfig.json` without `baseUrl`. Do not use `ignoreDeprecations` to keep a removed option. These are configuration requirements, not rule exemptions; see [architecture](architecture.md).
+
 ## HB008 — Dedicated business write inputs, not arbitrary patches
 
 **Applies to:** exported write inputs and function parameters in `businessRoots` and `serverServicesRoots`.

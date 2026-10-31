@@ -11,11 +11,19 @@ Hexbound is a deliberately restrictive TypeScript/React/Next.js dialect. It is n
 
 ## Hard contract
 
-- Rules cover every project-owned `.ts`, `.tsx`, `.mts`, and `.cts` file, including tests, scripts, and root TypeScript config. Third-party and declared generated code is out of scope; never relabel your own code as generated, vendor, or excluded.
+- Rules cover every project-owned `.ts`, `.tsx`, `.mts`, and `.cts` file admitted to the typed program, including tests, scripts, and root TypeScript config. Application TypeScript is always admitted; other owned TypeScript excluded by the project's own `tsconfig` is reported as excluded, never silently ignored. Third-party and declared generated code is out of scope; never relabel your own code as generated, vendor, or excluded.
 - Never add suppressions, lower severity, loosen policy, exclude a path, disable a rule, or change check wiring to pass.
 - A static pass proves only the mechanical portion. Complete the semantic review and report residual risk.
 - Loading this skill does not modify a project. Run `npx --no-install hexbound init` only when project adoption is authorized; do not ask again after that authorization. Before reporting completion, run `npx --no-install hexbound check --json`, fix mechanical violations, and list the remaining semantic-review items. Never claim a pass you did not observe.
 - Use the project's installed checker (`npx --no-install`, or the project script that pins it). Do not run a globally resolved `hexbound` or let `npx` download an unreviewed version.
+
+## Project shape and TypeScript 6
+
+Supported: one Next.js 16 App Router application (React 19, TypeScript 6.0.3, ESLint 9, Node.js 22+) with one `app/` or `src/app/` tree and one lockfile. No workspace/multi-app or Pages Router mode. Common layout is `src/app`, `src/components`, mixed `src/lib`, `src/types`, `proxy.ts`/`middleware.ts`, `instrumentation.ts`, and a server-only Prisma 7 client adapter; auxiliary services and tooling are not the application.
+
+`src/lib` is shared by default. A folder named `lib/data`, `lib/server`, or `lib/validation` has no privilege unless the configured policy scope covers it; a flat `lib` stays neutral. Keep `businessRoots` for real pure core, and exact database-client files, data roots, and validation wrappers for human-trusted policy. Never widen a broad scope or exclude a real source to pass.
+
+TypeScript 6 requires explicit global types and tsconfig-relative `paths` without `baseUrl`; never add `ignoreDeprecations` to keep a deprecated option. JavaScript tooling is not TS compliance proof, and an imported untyped application module makes the check incomplete, not green. Details: [architecture](references/architecture.md).
 
 ## Replacement map
 
@@ -98,3 +106,4 @@ A passing check is not a security proof, a correctness proof, or a substitute fo
 - [React state, reducers, effects, readonly](references/rules-react.md) — HB001–HB004, HB007
 - [Types, domain inputs, results, identity, money, exhaustiveness](references/rules-types.md) — HB005, HB006, HB008, HB013, HB014, HB017–HB019
 - [Server boundaries, validation, errors, external conditions, SQL](references/rules-server.md) — HB009–HB012, HB015, HB016, HB020
+- [Application architecture and TypeScript 6](references/architecture.md) — one-app layout, `lib` classification, Prisma, explicit types/paths, coverage limits
