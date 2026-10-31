@@ -26,7 +26,7 @@ export function makeContext(files: Readonly<Record<string, string>>, overrides: 
     writeFileSync(full, content);
     names.push(full);
   }
-  const options: ts.CompilerOptions = { strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.ReactJSX, skipLibCheck: true, baseUrl: root, paths: { '@/*': ['./*'] } };
+  const options: ts.CompilerOptions = { strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, jsx: ts.JsxEmit.ReactJSX, skipLibCheck: true, types: ['node', 'react'], paths: { '@/*': [path.join(root, '*')] } };
   const program = ts.createProgram(names, options);
   const owned = program.getSourceFiles().filter(file => names.includes(file.fileName));
   return { root, files: owned, program, checker: program.getTypeChecker(), policy: { ...testPolicy, ...overrides }, cleanup: () => rmSync(root, { recursive: true, force: true }) };

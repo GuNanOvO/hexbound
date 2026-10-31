@@ -54,7 +54,7 @@ const DATABASE_ADAPTERS: readonly DatabaseAdapter[] = [
   { key: 'postgres', modules: ['postgres'], unsafeMethods: { unsafe: true } },
   {
     key: 'prisma',
-    modules: ['@prisma/client', '.prisma/client', 'prisma'],
+    modules: ['@prisma/client', '.prisma/client', 'prisma', '@prisma/adapter-pg'],
     unsafeMethods: { $queryRawUnsafe: true, $executeRawUnsafe: true },
   },
   { key: 'drizzle', modules: ['drizzle-orm'], unsafeMethods: {} },
@@ -1142,6 +1142,7 @@ function addDeclarationDatabaseProvenance(context: AnalysisContext, declaration:
   if (moduleName !== undefined) addDatabaseModuleProvenance(context, moduleName, adapters);
   const packageName = packageNameFromFile(declaration.getSourceFile().fileName);
   if (packageName !== undefined) addDatabaseModuleProvenance(context, packageName, adapters);
+  if (generatedFileImportsPrismaRuntime(context, declaration.getSourceFile())) adapters.add('prisma');
 
   if (ts.isTypeAliasDeclaration(declaration)) {
     addTypeDatabaseProvenance(context, context.checker.getTypeFromTypeNode(declaration.type), adapters, seenTypes, seenSymbols);
@@ -1158,6 +1159,35 @@ function addDeclarationDatabaseProvenance(context: AnalysisContext, declaration:
       }
     }
   }
+}
+
+const generatedPrismaImportCache = new WeakMap<ts.SourceFile, { readonly policy: AnalysisContext['policy']; readonly value: boolean }>();
+
+/** Approved generated files gain Prisma provenance only through a real runtime import. */
+function generatedFileImportsPrismaRuntime(context: AnalysisContext, file: ts.SourceFile): boolean {
+  if (!isGenerated(context, file)) return false;
+  const cached = generatedPrismaImportCache.get(file);
+  if (cached && cached.policy === context.policy) return cached.value;
+  let value = false;
+  for (const statement of file.statements) {
+    let specifier: string | undefined;
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      specifier = statement.moduleSpecifier.text;
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      specifier = statement.moduleSpecifier.text;
+    } else if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+      && statement.moduleReference.expression && ts.isStringLiteral(statement.moduleReference.expression)) {
+      specifier = statement.moduleReference.expression.text;
+    }
+    if (specifier === undefined) continue;
+    const registered = registeredDatabasePackage(context, specifier);
+    if (registered !== undefined && adapterKeyForModule(registered) === 'prisma') {
+      value = true;
+      break;
+    }
+  }
+  generatedPrismaImportCache.set(file, { policy: context.policy, value });
+  return value;
 }
 
 function importModuleOfSymbol(symbol: ts.Symbol): string | undefined {
@@ -1207,6 +1237,8 @@ function registeredDatabasePackage(context: AnalysisContext, moduleName: string)
   for (const pkg of context.policy.dbPackages) {
     if (moduleName === pkg || moduleName.startsWith(pkg.replace(/\/$/, '') + '/')) return pkg;
   }
+  const prismaRegistered = context.policy.dbPackages.some(pkg => pkg === '@prisma/client' || pkg.startsWith('@prisma/client/'));
+  if (prismaRegistered && (moduleName === '@prisma/adapter-pg' || moduleName.startsWith('@prisma/adapter-pg/'))) return '@prisma/client';
   if ((moduleName === '.prisma' || moduleName.startsWith('.prisma/')) && context.policy.dbPackages.includes('@prisma/client')) return '@prisma/client';
   return undefined;
 }

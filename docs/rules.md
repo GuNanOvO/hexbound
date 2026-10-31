@@ -44,10 +44,16 @@ This is the exact index of the twenty approved rules. Each entry states the hard
 ## Applicability
 
 - All rules apply to project-owned TypeScript source, including tests and root TypeScript config, unless a rule says otherwise.
+- The supported TypeScript 6 configuration states needed global types explicitly and resolves `paths` relative to `tsconfig.json` without `baseUrl`. `ignoreDeprecations` is not an accepted way to retain a removed option; the effective strict options still apply.
+- A mixed `lib/` is shared by default. A directory such as `lib/data`, `lib/server`, `lib/domain`, or `lib/validation` acquires a rule scope only when the configured policy covers it, and broad `lib` grants are not a substitute for exact scopes. `businessRoots` covers real pure business core; database client files, data roots, and validation wrappers need exact human-reviewed policy entries.
+- Generated `.next*` output and declared generated files may be excluded and are listed. Application TypeScript remains in the typed program; other owned TypeScript excluded by the project's own `tsconfig` is listed as excluded rather than silently ignored. JavaScript tooling outside the app is not TypeScript compliance proof; an imported untyped application module leaves checking incomplete rather than green, and an exclusion cannot hide a capability that client code can reach.
+- One Next.js 16 App Router application is supported. Workspace/multi-app mode and TypeScript project-reference multi-app layouts are not. Auxiliary services/tooling beside the app are not application sources and their own checks do not prove the app.
 - HB010's database sub-check and HB020 apply only when a database SDK registered in `dbPackages` is actually imported (directly, aliased, or as an ambient module). A DB-free project is reported not applicable and is not analyzed through a variable name such as `db`. An unregistered SDK must be classified and registered; it is not silently passed.
 - A real-money project must set `"money": true` and declare its `moneyTypes`. A project-owned type/interface with a registered money name while the flag is false is an incomplete check (exit 2), not “not applicable.” Money without declared types cannot be inferred from arbitrary numbers; review must identify it and enable the rule. Do not add a database or money library merely to manufacture applicability.
 - Third-party code and declared generated output are outside the source rules. The excluded paths must be listed; an empty scan is not a pass.
 - HB004 has no general static proof. HB016's single narrow identity diagnostic does not prove zero-amount, empty-collection, or missing-branch behavior; those remain semantic review points, not green checks.
+
+Supported layout, `lib` classification, Prisma provenance, TypeScript 6 configuration, and coverage limits are detailed in [architecture and TypeScript 6](../skills/hexbound/references/architecture.md).
 
 ## CLI and waivers
 

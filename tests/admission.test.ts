@@ -12,7 +12,7 @@ const DESTINATIONS = ['package.json', 'tsconfig.json', POLICY_FILE, 'AGENTS.md',
 const NEXT_ESLINT_TEMPLATE = "import { defineConfig } from 'eslint/config';\nimport nextVitals from 'eslint-config-next/core-web-vitals';\nimport nextTs from 'eslint-config-next/typescript';\nexport default defineConfig([...nextVitals, ...nextTs]);\n";
 
 function regularTargetContent(destination: string): string {
-  if (destination === 'package.json') return JSON.stringify({ name: 'outside-app', private: true, scripts: {}, dependencies: { next: '16.4.3', react: '19.2.0' }, devDependencies: { typescript: '5.9.3', eslint: '9.39.5', hexbound: '0.1.0' } }) + '\n';
+  if (destination === 'package.json') return JSON.stringify({ name: 'outside-app', private: true, scripts: {}, dependencies: { next: '16.4.3', react: '19.2.0' }, devDependencies: { typescript: '6.0.3', eslint: '9.39.5', hexbound: '0.1.0' } }) + '\n';
   if (destination === 'tsconfig.json') return '{}\n';
   if (destination === POLICY_FILE) return JSON.stringify(defaultPolicy, null, 2) + '\n';
   if (destination === 'AGENTS.md') return 'outside original\n';

@@ -822,3 +822,242 @@ export function unrelated(): void {
   });
   assert.equal(byRule(findings, 'HB012').length, 2, 'only empty Promise.catch handlers are rejected');
 });
+
+test('HB010 distinguishes private env reads, auth imports and *.server modules from public or shadowed values', () => {
+  const findings = analyze({
+    'lib/config.ts': `export const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? '';
+export const mode = process.env.NODE_ENV;
+`,
+    'lib/secret-env.ts': `const env = process.env;
+export const token = env.API_KEY;
+`,
+    'lib/dynamic-env.ts': `export function read(name: string): string | undefined {
+  return process.env[name];
+}
+`,
+    'lib/imported-env.ts': `import { env } from 'node:process';
+export const apiKey = env.API_KEY;
+`,
+    'lib/shadowed.ts': `const process = { env: { API_KEY: 'public-value' } };
+export const value = process.env.API_KEY;
+`,
+    'lib/session.ts': `import { getServerSession } from 'next-auth';
+export async function session(): Promise<unknown> {
+  return getServerSession();
+}
+`,
+    'lib/client-auth.ts': `import { signIn } from 'next-auth/react';
+export const login = signIn;
+`,
+    'lib/clerk-client.ts': `import { useAuth } from '@clerk/nextjs/client';
+export const useSession = useAuth;
+`,
+    'lib/model.server.ts': `export function load(): string {
+  return 'row';
+}
+`,
+    'src/server/Widget.tsx': `'use client';
+export function widget(): string {
+  return 'widget';
+}
+`,
+    'app/ConfigClient.tsx': `'use client';
+import { siteUrl, mode } from '@/lib/config';
+export function ConfigClient() {
+  return siteUrl + mode;
+}
+`,
+    'app/SecretEnvClient.tsx': `'use client';
+import { token } from '@/lib/secret-env';
+export function SecretEnvClient() {
+  return token;
+}
+`,
+    'app/DynamicEnvClient.tsx': `'use client';
+import { read } from '@/lib/dynamic-env';
+export function DynamicEnvClient() {
+  return read('SECRET');
+}
+`,
+    'app/ImportedEnvClient.tsx': `'use client';
+import { apiKey } from '@/lib/imported-env';
+export function ImportedEnvClient() {
+  return apiKey;
+}
+`,
+    'app/ShadowedClient.tsx': `'use client';
+import { value } from '@/lib/shadowed';
+export function ShadowedClient() {
+  return value;
+}
+`,
+    'app/SessionClient.tsx': `'use client';
+import { session } from '@/lib/session';
+export function SessionClient() {
+  return session();
+}
+`,
+    'app/ClientAuth.tsx': `'use client';
+import { login } from '@/lib/client-auth';
+export function ClientAuth() {
+  return login;
+}
+`,
+    'app/ClerkClient.tsx': `'use client';
+import { useSession } from '@/lib/clerk-client';
+export function ClerkClient() {
+  return useSession;
+}
+`,
+    'app/ModelClient.tsx': `'use client';
+import { load } from '@/lib/model.server';
+export function ModelClient() {
+  return load();
+}
+`,
+    'app/DirectAuth.tsx': `'use client';
+import 'next-auth';
+export function DirectAuth() {
+  return null;
+}
+`,
+    'app/ServerScope.tsx': `'use client';
+import { widget } from '@/src/server/Widget';
+export function ServerScope() {
+  return widget();
+}
+`,
+  });
+  const rules = byRule(findings, 'HB010');
+  const files = new Set(rules.map(finding => finding.file));
+  assert.ok(files.has('app/SecretEnvClient.tsx'), 'whole-env alias hides a private read');
+  assert.ok(files.has('app/ImportedEnvClient.tsx'), 'an env binding imported from node:process is a private read');
+  assert.ok(files.has('app/DynamicEnvClient.tsx'), 'dynamic element access is a private read');
+  assert.ok(files.has('app/SessionClient.tsx'), 'transitive server auth import is sensitive');
+  assert.ok(files.has('app/DirectAuth.tsx'), 'a direct auth SDK import is sensitive');
+  assert.ok(files.has('app/ModelClient.tsx'), '*.server modules are sensitive');
+  assert.ok(files.has('app/ServerScope.tsx'), 'an explicit server scope wins over a use client directive');
+  assert.ok(!files.has('app/ConfigClient.tsx'), 'NEXT_PUBLIC_* and NODE_ENV reads remain browser-safe');
+  assert.ok(!files.has('app/ShadowedClient.tsx'), 'a shadowed local process object is not the Node process');
+  assert.ok(!files.has('app/ClientAuth.tsx'), 'next-auth/react is the browser-safe auth entry');
+  assert.ok(!files.has('app/ClerkClient.tsx'), '@clerk/nextjs/client is the browser-safe auth entry');
+});
+
+test('HB009 treats template files and metadata/viewport exports as page input boundaries', () => {
+  const findings = analyze({
+    'domain/orders.ts': orders,
+    'app/orders/template.tsx': `import { getOrder } from '@/domain/orders';
+export default function Template({ searchParams }: { searchParams: { id: string } }) {
+  const { id } = searchParams;
+  getOrder(id);
+  return null;
+}
+`,
+    'app/orders/page.tsx': `import { getOrder } from '@/domain/orders';
+export function generateMetadata({ searchParams }: { searchParams: { id: string } }) {
+  return { title: searchParams.id };
+}
+export function generateViewport({ params }: { params: { id: string } }) {
+  return { themeColor: params.id };
+}
+export default function Page() {
+  return null;
+}
+`,
+  });
+  const rows = byRule(findings, 'HB009');
+  assert.ok(rows.some(finding => finding.file === 'app/orders/template.tsx'), 'template searchParams are raw page input');
+  assert.ok(rows.some(finding => finding.file === 'app/orders/page.tsx'), 'generateMetadata and generateViewport are page input boundaries');
+});
+
+test('HB011 recognizes typed Prisma model origins without treating enums or generated helpers as entities', () => {
+  const findings = analyze({
+    'src/generated/prisma/client.ts': `import { PrismaPg } from '@prisma/adapter-pg';
+export namespace Prisma {
+  export type $UserPayload = { id: string; email: string; passwordHash: string };
+  export const ModelName = { User: 'User' } as const;
+}
+export type User = Prisma.$UserPayload;
+export type UserGetPayload<S> = Prisma.$UserPayload & { extra?: S };
+export type UserCreateInput = { email?: string };
+export type Role = 'ADMIN' | 'USER';
+`,
+    'vendor/node_modules/.pnpm/@prisma+client@7.0.0/node_modules/.prisma/client/index.d.ts': `declare namespace Prisma {
+  type $OrderPayload = { id: string; total: number };
+}
+export type Order = Prisma.$OrderPayload;
+export type OrderCreateInput = { total?: number };
+export type OrderStatus = 'open' | 'closed';
+`,
+    'app/UserView.tsx': `'use client';
+import type { User } from '@/src/generated/prisma/client';
+export function UserView({ user }: { user: User }) {
+  return user.email;
+}
+`,
+    'app/InputForm.tsx': `'use client';
+import type { UserCreateInput } from '@/src/generated/prisma/client';
+export function InputForm({ input }: { input: UserCreateInput }) {
+  return input.email;
+}
+`,
+    'app/RoleBadge.tsx': `'use client';
+import type { Role } from '@/src/generated/prisma/client';
+export function RoleBadge({ role }: { role: Role }) {
+  return role;
+}
+`,
+    'app/PayloadView.tsx': `'use client';
+import type { UserGetPayload } from '@/src/generated/prisma/client';
+export function PayloadView({ payload }: { payload: UserGetPayload<string> }) {
+  return payload.email;
+}
+`,
+    'app/OrderView.tsx': `'use client';
+import type { Order } from '../vendor/node_modules/.pnpm/@prisma+client@7.0.0/node_modules/.prisma/client/index';
+export function OrderView({ order }: { order: Order }) {
+  return order.total;
+}
+`,
+    'app/OrderInput.tsx': `'use client';
+import type { OrderCreateInput } from '../vendor/node_modules/.pnpm/@prisma+client@7.0.0/node_modules/.prisma/client/index';
+export function OrderInput({ input }: { input: OrderCreateInput }) {
+  return input.total;
+}
+`,
+    'app/OrderStatus.tsx': `'use client';
+import type { OrderStatus } from '../vendor/node_modules/.pnpm/@prisma+client@7.0.0/node_modules/.prisma/client/index';
+export function OrderStatusView({ status }: { status: OrderStatus }) {
+  return status;
+}
+`,
+  }, { generatedPaths: ['next-env.d.ts', 'src/generated'] });
+  const rules = byRule(findings, 'HB011');
+  const files = new Set(rules.map(finding => finding.file));
+  assert.ok(files.has('app/UserView.tsx'), 'a generated Prisma model type is an entity');
+  assert.ok(files.has('app/OrderView.tsx'), 'a pnpm-installed Prisma model type is an entity');
+  assert.ok(!files.has('app/InputForm.tsx'), 'generated create-input helpers are not entities');
+  assert.ok(!files.has('app/RoleBadge.tsx'), 'Prisma enums stay serializable');
+  assert.ok(!files.has('app/PayloadView.tsx'), 'generated payload helpers are not newly called entities');
+  assert.ok(!files.has('app/OrderInput.tsx'), 'pnpm create-input helpers are not entities');
+  assert.ok(!files.has('app/OrderStatus.tsx'), 'pnpm Prisma enums stay serializable');
+});
+
+test('HB011 treats *.server modules as server request-state owners', () => {
+  const findings = analyze({
+    'lib/state.server.ts': `const pending = new Map<string, string>();
+export function remember(key: string, value: string): void {
+  pending.set(key, value);
+}
+`,
+    'lib/state.client.ts': `'use client';
+const pending = new Map<string, string>();
+export function remember(key: string, value: string): void {
+  pending.set(key, value);
+}
+`,
+  });
+  const rows = byRule(findings, 'HB011');
+  assert.ok(rows.some(finding => finding.file === 'lib/state.server.ts'), '*.server module state is server state');
+  assert.ok(!rows.some(finding => finding.file === 'lib/state.client.ts'), 'client module state is not server request state');
+});

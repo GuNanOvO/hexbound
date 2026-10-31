@@ -7,6 +7,8 @@ quoted order or an explicit rejection.
 
 ## Run
 
+The example uses the supported root `app/` layout; a `src/app/` application is equally supported. It is configured for the TypeScript 6.0.3 support matrix: explicit global types, tsconfig-relative path aliases without `baseUrl`, and no deprecation suppression. Generated Next.js output is excluded from source checks, while the example's owned TypeScript sources remain covered.
+
 The source checkout includes the example lockfile, policy and ESLint integration. Its local
 `hexbound` dependency points at the repository root, so build the checker before installing the
 example. No sibling example files are imported.

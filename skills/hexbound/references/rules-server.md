@@ -117,6 +117,8 @@ export const serverEnv = ServerEnvSchema.parse(process.env);
 
 **Limits:** the checker follows value imports/re-exports, literal dynamic imports, and TypeScript paths, and verifies declared server-only markers. It does not run a Next.js build; a separate build stage is required to prove the framework boundary. A non-literal dynamic import whose target cannot be determined fails closed rather than reporting a static pass. Unknown data-access SDKs must be classified by a human; “not on the known list” is not proof that no database is used.
 
+A Prisma 7 client/driver adapter belongs in an exact human-reviewed server/data file scope. A flat `lib/` folder does not gain server privileges from its name, and a generated-output exclusion cannot hide a client-reachable sensitive module. See [architecture](architecture.md).
+
 ## HB011 — Explicit DTOs; no entity leaks or request state at module scope
 
 **Applies to:** values crossing from server components, route handlers, or Server Actions to client components or responses, and module-level state in server modules.

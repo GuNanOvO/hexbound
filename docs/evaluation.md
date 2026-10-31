@@ -1,6 +1,16 @@
 # Evaluation and verification
 
-Observed on 2026-10-30. This report separates generated-code compliance, checker correctness, and application behavior. None is a substitute for the others.
+**Historical record.** All generated-code, runtime, and consumer measurements in this document were observed on 2026-10-30 under **TypeScript 5.9** and **Node.js 22.16.0**. They are retained as the results of that experiment; they are not TypeScript 6.0.3 measurements and must not be relabeled or recounted as TS 6 evidence. TypeScript 6 support is specified and tested separately; this report does not fold those checks into the historical counts, and no fresh model-generation or runtime sample count is claimed here.
+
+This report separates generated-code compliance, checker correctness, and application behavior. None is a substitute for the others.
+
+## Current TypeScript 6 compatibility verification
+
+The current package was built with TypeScript 6.0.3, the pattern-source typecheck passed, and the complete **180-test** suite passed with zero failures, skips or cancellations under both the local runtime and a native Node.js `22.16.0` executable. The suite includes real CLI integration, TypeScript 6 aliases and explicit global types, mixed-lib public/server classification, generated Prisma provenance, existing-project ESLint plugin reuse, React hook diagnostics, tooling isolation, symlink write protection, effective-configuration tampering and trusted-policy scopes.
+
+A separate read-only source snapshot organized as a large `src/app` + mixed `src/lib` application was copied without environment files or executable services, initialized twice (the second run changed nothing), and checked with TypeScript 6.0.3. The architecture was recognized, application source entered the typed program, excluded tooling/generated paths stayed visible, and the project's existing compiler/rule findings were reported as source results rather than as architecture or configuration failures. That snapshot does not pass the strict dialect as-is, and this report does not claim otherwise; a large application can require a raised Node.js heap for the resident compiler and type-aware lint state.
+
+These are checker and integration results, not new model-generation samples. The historical experiment below remains the only counted model run and is still labeled TypeScript 5.9.
 
 ## Writing decisions learned from existing skills
 
@@ -11,7 +21,7 @@ The pinned sources and license observations are in [sources](sources.md). Hexbou
 - **Vercel React skills:** small incorrect/correct examples and explicit exceptions, instead of a large collection of unexplained slogans.
 - **Next.js skills:** version prerequisites and task-specific references, with runtime verification separate from compilation.
 
-The core skill links three detailed references, gives the actual local verification commands, rejects self-approved exceptions, and distinguishes mechanical checks from semantic review. It does not ban every primitive, local mutation, `else`, optional chain, or non-Result function. It does not claim `useState` is officially unsafe; reducer-only state is this project's chosen dialect.
+The core skill links four detailed references, gives the actual local verification commands, rejects self-approved exceptions, and distinguishes mechanical checks from semantic review. It does not ban every primitive, local mutation, `else`, optional chain, or non-Result function. It does not claim `useState` is officially unsafe; reducer-only state is this project's chosen dialect.
 
 ## Generated-code experiment
 
@@ -41,7 +51,7 @@ The repaired condition uses the five initial guided artifacts and their actual d
 2. Every artifact's TypeScript sources were placed in the same initialized, installed Next fixture, with money checks enabled. The real `checkProject` ran admission checks, compiler diagnostics, effective ESLint configuration checks, custom and stock enforcement sentinels, policy handling and source rules. Exit `0` is the table's complete-static-pass criterion.
 3. The model-generated package/configuration files were not adopted: common fixture configuration isolates generated source behavior. The fixture uses dependency symlinks and a prepared lockfile marker; it is not evidence that each model generated an installable application.
 
-The guidance experiment explicitly supplied skill text. It did **not** test an autonomous tool-using agent, automatic skill discovery/loading by a particular host, or a multi-turn implementation workflow. The initial condition used the core plus the first 300 lines of each reference; the complete-reference conditions used full snapshots. Later documentation clarifications are not claimed to have received a new generation run. The generated applications were not built or browser-tested. The 19 shipped scenarios are an evaluation specification, not a claim that all 19 were executed against models. No verbal model rationalizations were present in the baseline artifacts, and none are invented here.
+The guidance experiment explicitly supplied skill text. It did **not** test an autonomous tool-using agent, automatic skill discovery/loading by a particular host, or a multi-turn implementation workflow. The initial condition used the core plus the first 300 lines of each reference; the complete-reference conditions used full snapshots. Later documentation clarifications are not claimed to have received a new generation run. The generated applications were not built or browser-tested. The shipped scenarios are an evaluation specification, not a claim that any of them were executed against models. No verbal model rationalizations were present in the baseline artifacts, and none are invented here.
 
 ### Reproduction and raw evidence
 
@@ -68,6 +78,8 @@ node_modules/.bin/tsx ../research/evals/full-check-artifacts.mts baseline with-s
 Rerunning those scripts checks the saved artifacts; it does not recreate unavailable provider model versions or generate new samples.
 
 ## Real application and consumer verification
+
+The following is the historical TypeScript 5.9 / Node.js 22.16.0 run, retained without relabeling.
 
 The final native Node.js `22.16.0` run passed all **168 tests**, with zero failures, skips or cancellations. The compiled tool build and pattern-source typecheck also passed. Coverage includes source rules, real CLI integration, strict admission, symlink write protection, effective ESLint tampering, trusted-policy scopes and diagnostic preservation.
 
